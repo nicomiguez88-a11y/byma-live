@@ -822,10 +822,10 @@ function renderDash() {
 // ═══════════════════════════════════════
 async function renderTech(ticker) {
   activeTech = ticker;
-  $('techPills').innerHTML = STATE.assets.map(a=>
-    `<span class="pill ${a.type} ${a.ticker===ticker?'on':''}"
-       onclick="renderTech('${a.ticker}')">${a.ticker}</span>`
-  ).join('');
+  $('techPills').innerHTML = STATE.assets.map(a=>{
+    var cls = 'pill '+a.type+(a.ticker===ticker?' on':'');
+    return '<span class="'+cls+'" onclick="renderTech(\'' +a.ticker+ '\')">'+a.ticker+'</span>';
+  }).join('');
 
   const a = STATE.assets.find(x=>x.ticker===ticker);
   if(!a) return;
@@ -953,10 +953,10 @@ async function renderTech(ticker) {
 // ═══════════════════════════════════════
 function renderFund(ticker) {
   activeFund = ticker;
-  $('fundPills').innerHTML = STATE.assets.map(a=>
-    `<span class="pill ${a.type} ${a.ticker===ticker?'on':''}"
-       onclick="renderFund('${a.ticker}')">${a.ticker}</span>`
-  ).join('');
+  $('fundPills').innerHTML = STATE.assets.map(a=>{
+    var cls = 'pill '+a.type+(a.ticker===ticker?' on':'');
+    return '<span class="'+cls+'" onclick="renderFund(\'' +a.ticker+ '\')">'+a.ticker+'</span>';
+  }).join('');
 
   const a = STATE.assets.find(x=>x.ticker===ticker);
   if(!a) return;
@@ -1094,16 +1094,17 @@ function genResponse(q) {
       <span class="hl">MEP:</span> $${(STATE.fx.mep||0).toLocaleString('es-AR',{maximumFractionDigits:0})}<br>
       <span class="hl">Blue:</span> $${(STATE.fx.blue||0).toLocaleString('es-AR',{maximumFractionDigits:0})}<br>
       <span class="hl">Canje CCL/MEP:</span> ${canje}%<br><br>
-      Canje ${parseFloat(canje)<2?'mínimo — CCL y MEP casi convergentes':'elevado — diferencia de precio entre bonos y acciones'}.`;`;
+      Canje ${parseFloat(canje)<2?'minimo — CCL y MEP casi convergentes':'elevado — diferencia de precio entre bonos y acciones'}.`;
   }
   if(ql.includes('cartera') || ql.includes('portafolio') || ql.match(/\$?\d+/)) {
     const budget = parseInt(q.match(/\d[\d,.]*/)?.[0]?.replace(/,/g,'')||5000);
-    return `Cartera sugerida para <b>USD ${budget.toLocaleString()}</b> — basada en scores actuales:<br><br>
-      ${top.slice(0,5).map((a,i)=>{
-        const pesos = [22,18,18,15,12,10,5][i]||5;
-        return `<span class="hl">${a.ticker}</span> ${pesos}% (~USD ${Math.round(budget*pesos/100).toLocaleString()}) — Score ${a.score}<br>`;
-      }).join('')}
-      <br>Mix: ${Math.round(top.slice(0,5).filter(a=>a.type==='cedear').length/5*100)}% CEDEARs / ${Math.round(top.slice(0,5).filter(a=>a.type==='local').length/5*100)}% locales.`;
+    const rows = top.slice(0,5).map((a,i)=>{
+      const pesos = [22,18,18,15,12,10,5][i]||5;
+      return '<span class="hl">'+a.ticker+'</span> '+pesos+'% (~USD '+Math.round(budget*pesos/100).toLocaleString()+') &mdash; Score '+a.score+'<br>';
+    }).join('');
+    const mixCed = Math.round(top.slice(0,5).filter(a=>a.type==='cedear').length/5*100);
+    const mixLoc = 100 - mixCed;
+    return 'Cartera sugerida para <b>USD '+budget.toLocaleString()+'</b> &mdash; basada en scores actuales:<br><br>'+rows+'<br>Mix: '+mixCed+'% CEDEARs / '+mixLoc+'% locales.';
   }
   if(ql.includes('rotar') || ql.includes('local') || ql.includes('conviene')) {
     const canje = STATE.fx.mep>0 ? (STATE.fx.ccl/STATE.fx.mep-1)*100 : 2;
