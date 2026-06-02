@@ -440,20 +440,68 @@ async function proxyFetch(url, timeout=10000) {
   }
 }
 
-async function yqQuote(symbols) {
-  const fields = 'regularMarketPrice,regularMarketChangePercent,trailingPE,priceToBook,returnOnEquity,profitMargins,revenueGrowth,earningsGrowth,enterpriseToEbitda,forwardPE,regularMarketVolume,fiftyDayAverage,twoHundredDayAverage,fiftyTwoWeekHigh,fiftyTwoWeekLow';
-  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}&fields=${fields}`;
+async function yqQuote(symbolList) {
+  // v7 bloqueado — usar v8/chart individualmente por ticker
+  const syms = symbolList.split(',');
+  const out = {};
+  await Promise.all(syms.map(async sym => {
+    try {
+      const url = 'https://query1.finance.yahoo.com/v8/finance/chart/'+sym+'?interval=1d&range=5d';
+      const r = await proxyFetch(url, 8000);
+      if (!r.ok) return;
+      const d = await r.json();
+      const meta  = d?.chart?.result?.[0]?.meta || {};
+      const quote = d?.chart?.result?.[0]?.indicators?.quote?.[0] || {};
+      const closes = (d?.chart?.result?.[0]?.indicators?.quote?.[0]?.close || []).filter(v=>v!=null);
+      const prev   = closes.length >= 2 ? closes[closes.length-2] : null;
+      const price  = meta.regularMarketPrice || closes[closes.length-1] || 0;
+      const chgPct = prev && prev > 0 ? (price/prev - 1)*100 : (meta.regularMarketChangePercent || 0);
+      out[sym] = {
+        symbol: sym,
+        regularMarketPrice:             price,
+        regularMarketChangePercent:     chgPct,
+        fiftyDayAverage:                meta.fiftyDayAverage || 0,
+        twoHundredDayAverage:           meta.twoHundredDayAverage || 0,
+        fiftyTwoWeekHigh:               meta.fiftyTwoWeekHigh || price,
+        fiftyTwoWeekLow:                meta.fiftyTwoWeekLow  || price,
+        regularMarketVolume:            meta.regularMarketVolume || 0,
+        // Fundamentales: intentar desde summaryDetail via v11
+        trailingPE: null, priceToBook: null,
+        returnOnEquity: null, profitMargins: null,
+        revenueGrowth: null, earningsGrowth: null,
+        enterpriseToEbitda: null,
+      };
+    } catch(e) {
+      console.warn('yqQuote '+sym+':', e.message);
+    }
+  }));
+
+  // Intentar fundamentales via v11/finance/quoteSummary (un solo intento en batch)
   try {
-    const r = await proxyFetch(url);
-    if (!r.ok) return {};
-    const d = await r.json();
-    const out = {};
-    for (const q of (d?.quoteResponse?.result||[])) out[q.symbol] = q;
-    return out;
+    const mods = 'financialData,defaultKeyStatistics';
+    await Promise.all(syms.map(async sym => {
+      const url = 'https://query1.finance.yahoo.com/v11/finance/quoteSummary/'+sym+'?modules='+mods;
+      const r = await proxyFetch(url, 6000);
+      if (!r.ok) return;
+      const d = await r.json();
+      const fd = d?.quoteSummary?.result?.[0]?.financialData || {};
+      const ks = d?.quoteSummary?.result?.[0]?.defaultKeyStatistics || {};
+      if (out[sym]) {
+        out[sym].trailingPE        = fd.currentPrice?.raw ? (fd.currentPrice.raw / (fd.earningsGrowth?.raw||1)) : null;
+        out[sym].returnOnEquity    = fd.returnOnEquity?.raw    || null;
+        out[sym].profitMargins     = fd.profitMargins?.raw     || null;
+        out[sym].revenueGrowth     = fd.revenueGrowth?.raw     || null;
+        out[sym].earningsGrowth    = fd.earningsGrowth?.raw    || null;
+        out[sym].priceToBook       = ks.priceToBook?.raw       || null;
+        out[sym].enterpriseToEbitda = ks.enterpriseToEbitda?.raw || null;
+        out[sym].trailingPE        = ks.trailingPE?.raw        || null;
+      }
+    }));
   } catch(e) {
-    console.error('yqQuote error:', e.message);
-    return {};
+    console.warn('Fundamentales parciales:', e.message);
   }
+
+  return out;
 }
 
 async function yqChart(symbol) {
