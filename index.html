@@ -423,14 +423,21 @@ const TICKERS = {
 const PROXY = url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
 
 async function proxyFetch(url, timeout=10000) {
-  // Intentar directo primero (funciona en algunos navegadores / entornos)
+  // Intentar directo primero (rápido, 2s)
   try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(4000) });
+    const r = await fetch(url, { signal: AbortSignal.timeout(2000) });
     if (r.ok) return r;
   } catch(e) { /* directo bloqueado, usar proxy */ }
-  // Proxy allorigins
-  const r = await fetch(PROXY(url), { signal: AbortSignal.timeout(timeout) });
-  return r;
+  // Proxy allorigins — funciona desde GitHub Pages
+  try {
+    const r = await fetch(PROXY(url), { signal: AbortSignal.timeout(timeout) });
+    return r;
+  } catch(e) {
+    // Segundo proxy de respaldo: corsproxy.io
+    const r2 = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+      { signal: AbortSignal.timeout(timeout) });
+    return r2;
+  }
 }
 
 async function yqQuote(symbols) {
@@ -493,31 +500,50 @@ async function loadAll() {
   $('loader').classList.remove('off');
   $('errBox').style.display = 'none';
 
+  // 1. Tipos de cambio
+  step('Obteniendo tipos de cambio...');
   try {
-    step('Obteniendo tipos de cambio...');
     STATE.fx = await fetchFX();
-
-    step('Descargando cotizaciones USD...');
-    const quotes = await fetchQuotes();
-
-    step('Calculando indicadores técnicos...');
-    STATE.assets = buildAssets(quotes);
-
-    step('Listo ✓');
-    await sleep(300);
-    $('loader').classList.add('off');
-
-    renderDash();
-    if($('page-tech').classList.contains('on')) renderTech(activeTech);
-    if($('page-fund').classList.contains('on')) renderFund(activeFund);
-
-    $('tsLabel').textContent = 'Últ: ' + new Date().toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});
   } catch(e) {
-    $('loader').classList.add('off');
-    $('errBox').style.display='block';
-    $('errBox').textContent = '⚠ Error al cargar datos: ' + e.message + '. Reintentá en unos segundos.';
-    console.error(e);
+    console.warn('FX error:', e.message);
+    STATE.fx = { ccl:1430, mep:1410, blue:1460, oficial:1070 };
   }
+
+  // 2. Cotizaciones USD (Yahoo Finance via proxy)
+  step('Descargando cotizaciones USD...');
+  let quotes = {};
+  try {
+    quotes = await fetchQuotes();
+  } catch(e) {
+    console.warn('Quotes error:', e.message);
+  }
+
+  // 3. Siempre construir assets (con lo que haya)
+  step('Calculando indicadores...');
+  STATE.assets = buildAssets(quotes);
+
+  // 4. Si no hay datos de precio, mostrar aviso pero igual cargar
+  const sinPrecios = STATE.assets.filter(a => !a.price || a.price === 0).length;
+  if (sinPrecios === STATE.assets.length) {
+    $('errBox').style.display = 'block';
+    $('errBox').textContent = '⚠ No se pudieron obtener precios de Yahoo Finance. Mostrando scores estimados. Reintentá en unos segundos.';
+  } else if (sinPrecios > 0) {
+    $('errBox').style.display = 'block';
+    $('errBox').style.background = 'rgba(240,165,0,.08)';
+    $('errBox').style.color = 'var(--amber)';
+    $('errBox').style.borderColor = 'rgba(240,165,0,.2)';
+    $('errBox').textContent = `⚠ ${sinPrecios} activos sin precio online. El resto cargó correctamente.`;
+  }
+
+  step('Listo ✓');
+  await sleep(200);
+  $('loader').classList.add('off');
+
+  renderDash();
+  if($('page-tech').classList.contains('on')) renderTech(activeTech);
+  if($('page-fund').classList.contains('on')) renderFund(activeFund);
+
+  $('tsLabel').textContent = 'Últ: ' + new Date().toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});
   btn.disabled = false;
 }
 
@@ -594,11 +620,18 @@ async function fetchQuotes() {
 // ═══════════════════════════════════════
 // CONSTRUIR ASSETS con scoring
 // ═══════════════════════════════════════
+// Precios de referencia por si Yahoo no responde
+const REF_PRICES = {
+  GGAL:17, BMA:14, YPF:16, PAMP:5,
+  AAPL:215, MSFT:430, GOOGL:170, NVDA:900,
+  MELI:2200, AMZN:190, VIST:48, GLOB:215,
+};
+
 function buildAssets(quotes) {
-  const ccl = STATE.fx.ccl || 1150;
+  const ccl = STATE.fx.ccl || 1430;
   return Object.entries(TICKERS).map(([ticker, meta]) => {
     const q = quotes[meta.yf] || {};
-    const price = q.regularMarketPrice || 0;
+    const price = q.regularMarketPrice || REF_PRICES[ticker] || 0;
     const change = q.regularMarketChangePercent || 0;
 
     // Indicadores técnicos aproximados desde datos disponibles
