@@ -420,249 +420,73 @@ const TICKERS = {
 
 // ── API helper: envuelve cualquier URL en allorigins.win para evitar CORS
 // allorigins funciona desde GitHub Pages y no requiere autenticación
-const PROXY = url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-
-async function proxyFetch(url, timeout=10000) {
-  // Intentar directo primero (rápido, 2s)
-  try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(2000) });
-    if (r.ok) return r;
-  } catch(e) { /* directo bloqueado, usar proxy */ }
-  // Proxy allorigins — funciona desde GitHub Pages
-  try {
-    const r = await fetch(PROXY(url), { signal: AbortSignal.timeout(timeout) });
-    return r;
-  } catch(e) {
-    // Segundo proxy de respaldo: corsproxy.io
-    const r2 = await fetch(`https://corsproxy.io/?url=${encodeURIComponent(url)}`,
-      { signal: AbortSignal.timeout(timeout) });
-    return r2;
-  }
+// ── CAPA DE DATOS (CORS nativo) ────────────────────────────────
+const TD_KEY = 'demo';
+async function tdFetch(ep, params={}) {
+  const qs = new URLSearchParams({...params, apikey:TD_KEY}).toString();
+  const r  = await fetch('https://api.twelvedata.com/'+ep+'?'+qs, {signal:AbortSignal.timeout(10000)});
+  if (!r.ok) throw new Error('TD '+r.status);
+  return r.json();
 }
-
-async function yqQuote(symbolList) {
-  // v7 bloqueado — usar v8/chart individualmente por ticker
-  const syms = symbolList.split(',');
-  const out = {};
-  await Promise.all(syms.map(async sym => {
-    try {
-      const url = 'https://query1.finance.yahoo.com/v8/finance/chart/'+sym+'?interval=1d&range=5d';
-      const r = await proxyFetch(url, 8000);
-      if (!r.ok) return;
-      const d = await r.json();
-      const meta  = d?.chart?.result?.[0]?.meta || {};
-      const quote = d?.chart?.result?.[0]?.indicators?.quote?.[0] || {};
-      const closes = (d?.chart?.result?.[0]?.indicators?.quote?.[0]?.close || []).filter(v=>v!=null);
-      const prev   = closes.length >= 2 ? closes[closes.length-2] : null;
-      const price  = meta.regularMarketPrice || closes[closes.length-1] || 0;
-      const chgPct = prev && prev > 0 ? (price/prev - 1)*100 : (meta.regularMarketChangePercent || 0);
-      out[sym] = {
-        symbol: sym,
-        regularMarketPrice:             price,
-        regularMarketChangePercent:     chgPct,
-        fiftyDayAverage:                meta.fiftyDayAverage || 0,
-        twoHundredDayAverage:           meta.twoHundredDayAverage || 0,
-        fiftyTwoWeekHigh:               meta.fiftyTwoWeekHigh || price,
-        fiftyTwoWeekLow:                meta.fiftyTwoWeekLow  || price,
-        regularMarketVolume:            meta.regularMarketVolume || 0,
-        // Fundamentales: intentar desde summaryDetail via v11
-        trailingPE: null, priceToBook: null,
-        returnOnEquity: null, profitMargins: null,
-        revenueGrowth: null, earningsGrowth: null,
-        enterpriseToEbitda: null,
+const _cache = {};
+function fromCache(k, ttl) { const e=_cache[k]; return (e&&Date.now()-e.ts<ttl)?e.val:null; }
+function toCache(k, val) { _cache[k]={val,ts:Date.now()}; return val; }
+async function fetchPrices(syms) {
+  const ckey='p_'+syms.join(','), hit=fromCache(ckey,60000);
+  if (hit) return hit;
+  try {
+    const d = await tdFetch('quote', {symbol:syms.join(',')});
+    const items = Array.isArray(d)?d:(d.symbol?[d]:Object.values(d));
+    const out = {};
+    for (const q of items) {
+      if (!q||!q.symbol||q.status==='error') continue;
+      out[q.symbol] = {
+        price:  parseFloat(q.close||q.previous_close||0),
+        change: parseFloat(q.percent_change||0),
+        hi52:   parseFloat(q.fifty_two_week?.high||q.close||0),
+        lo52:   parseFloat(q.fifty_two_week?.low||q.close||0),
+        volume: parseInt(q.volume||0),
       };
-    } catch(e) {
-      console.warn('yqQuote '+sym+':', e.message);
     }
-  }));
-
-  // Intentar fundamentales via v11/finance/quoteSummary (un solo intento en batch)
-  try {
-    const mods = 'financialData,defaultKeyStatistics';
-    await Promise.all(syms.map(async sym => {
-      const url = 'https://query1.finance.yahoo.com/v11/finance/quoteSummary/'+sym+'?modules='+mods;
-      const r = await proxyFetch(url, 6000);
-      if (!r.ok) return;
-      const d = await r.json();
-      const fd = d?.quoteSummary?.result?.[0]?.financialData || {};
-      const ks = d?.quoteSummary?.result?.[0]?.defaultKeyStatistics || {};
-      if (out[sym]) {
-        out[sym].trailingPE        = fd.currentPrice?.raw ? (fd.currentPrice.raw / (fd.earningsGrowth?.raw||1)) : null;
-        out[sym].returnOnEquity    = fd.returnOnEquity?.raw    || null;
-        out[sym].profitMargins     = fd.profitMargins?.raw     || null;
-        out[sym].revenueGrowth     = fd.revenueGrowth?.raw     || null;
-        out[sym].earningsGrowth    = fd.earningsGrowth?.raw    || null;
-        out[sym].priceToBook       = ks.priceToBook?.raw       || null;
-        out[sym].enterpriseToEbitda = ks.enterpriseToEbitda?.raw || null;
-        out[sym].trailingPE        = ks.trailingPE?.raw        || null;
-      }
-    }));
-  } catch(e) {
-    console.warn('Fundamentales parciales:', e.message);
-  }
-
-  return out;
+    return toCache(ckey, out);
+  } catch(e) { console.warn('fetchPrices:', e.message); return {}; }
 }
-
-async function yqChart(symbol) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=1y`;
+async function fetchFundamentals(sym) {
+  const k='f_'+sym, hit=fromCache(k,3600000);
+  if (hit) return hit;
   try {
-    const r = await proxyFetch(url);
-    if (!r.ok) return null;
-    const d = await r.json();
-    return d?.chart?.result?.[0] || null;
-  } catch(e) {
-    console.error('yqChart error:', e.message);
-    return null;
-  }
+    const d=await tdFetch('statistics',{symbol:sym});
+    const vs=d?.statistics?.valuations_metrics||{};
+    const fs=d?.statistics?.financials||{};
+    const ic=d?.statistics?.income_statement||{};
+    return toCache(k,{
+      pe:parseFloat(vs.trailing_pe||0)||null,
+      pb:parseFloat(vs.price_to_book_mrq||0)||null,
+      ev_eb:parseFloat(vs.enterprise_to_ebitda||0)||null,
+      roe:parseFloat(fs.return_on_equity_ttm||0)||null,
+      mn:parseFloat(fs.profit_margin||0)||null,
+      rg:parseFloat(ic.quarterly_revenue_growth_yoy||0)||null,
+      eg:parseFloat(ic.quarterly_earnings_growth_yoy||0)||null,
+    });
+  } catch(e) { console.warn('fund '+sym+':', e.message); return toCache(k,{}); }
 }
-
-let STATE = { fx:{}, assets:[], loaded:false };
-let CHARTS = {};
-let activeTech = 'NVDA';
-let activeFund = 'MSFT';
-let chatHist   = [];
-
-const $ = id => document.getElementById(id);
-const sleep = ms => new Promise(r=>setTimeout(r,ms));
-
-// ═══════════════════════════════════════
-// NAVEGACIÓN
-// ═══════════════════════════════════════
-function go(page, btn) {
-  document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));
-  document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('on'));
-  $('page-'+page).classList.add('on');
-  btn.classList.add('on');
-  if(page==='tech') renderTech(activeTech);
-  if(page==='fund') renderFund(activeFund);
-  if(page==='ai' && chatHist.length===0) initChat();
+async function fetchHistory(sym) {
+  const k='h_'+sym, hit=fromCache(k,1800000);
+  if (hit) return hit;
+  try {
+    const url='https://stooq.com/q/d/l/?s='+sym.toLowerCase()+'.us&i=d';
+    const r=await fetch(url,{signal:AbortSignal.timeout(8000)});
+    const txt=await r.text();
+    const data=txt.trim().split('\n').slice(1).slice(-252).map(l=>{
+      const p=l.split(','); return {date:p[0],close:parseFloat(p[4])};
+    }).filter(x=>x.close&&!isNaN(x.close));
+    return toCache(k,data);
+  } catch(e) { console.warn('hist '+sym+':', e.message); return []; }
 }
-
-// ═══════════════════════════════════════
-// CARGA PRINCIPAL
-// ═══════════════════════════════════════
-async function loadAll() {
-  const btn = $('rfBtn');
-  btn.disabled = true;
-  $('loader').classList.remove('off');
-  $('errBox').style.display = 'none';
-
-  // 1. Tipos de cambio
-  step('Obteniendo tipos de cambio...');
-  try {
-    STATE.fx = await fetchFX();
-  } catch(e) {
-    console.warn('FX error:', e.message);
-    STATE.fx = { ccl:1430, mep:1410, blue:1460, oficial:1070 };
-  }
-
-  // 2. Cotizaciones USD (Yahoo Finance via proxy)
-  step('Descargando cotizaciones USD...');
-  let quotes = {};
-  try {
-    quotes = await fetchQuotes();
-  } catch(e) {
-    console.warn('Quotes error:', e.message);
-  }
-
-  // 3. Siempre construir assets (con lo que haya)
-  step('Calculando indicadores...');
-  STATE.assets = buildAssets(quotes);
-
-  // 4. Si no hay datos de precio, mostrar aviso pero igual cargar
-  const sinPrecios = STATE.assets.filter(a => !a.price || a.price === 0).length;
-  if (sinPrecios === STATE.assets.length) {
-    $('errBox').style.display = 'block';
-    $('errBox').textContent = '⚠ No se pudieron obtener precios de Yahoo Finance. Mostrando scores estimados. Reintentá en unos segundos.';
-  } else if (sinPrecios > 0) {
-    $('errBox').style.display = 'block';
-    $('errBox').style.background = 'rgba(240,165,0,.08)';
-    $('errBox').style.color = 'var(--amber)';
-    $('errBox').style.borderColor = 'rgba(240,165,0,.2)';
-    $('errBox').textContent = `⚠ ${sinPrecios} activos sin precio online. El resto cargó correctamente.`;
-  }
-
-  step('Listo ✓');
-  await sleep(200);
-  $('loader').classList.add('off');
-
-  renderDash();
-  if($('page-tech').classList.contains('on')) renderTech(activeTech);
-  if($('page-fund').classList.contains('on')) renderFund(activeFund);
-
-  $('tsLabel').textContent = 'Últ: ' + new Date().toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});
-  btn.disabled = false;
-}
-
-function step(t) { $('lstep').textContent = t; }
-
-// ═══════════════════════════════════════
-// FETCH: TIPOS DE CAMBIO
-// ═══════════════════════════════════════
-async function fetchFX() {
-  // Fuente 1: dolarapi.com — campo 'casa' con valores exactos
-  try {
-    const r = await proxyFetch('https://dolarapi.com/v1/dolares', 6000);
-    if (r.ok) {
-      const data = await r.json();
-      const fx = { ccl:null, mep:null, blue:null, oficial:null };
-      for (const item of data) {
-        const casa = (item.casa||'').toLowerCase();
-        const v = parseFloat(item.venta||0);
-        if (casa === 'contadoconliqui') fx.ccl     = v;
-        else if (casa === 'bolsa')      fx.mep     = v;
-        else if (casa === 'blue')       fx.blue    = v;
-        else if (casa === 'oficial')    fx.oficial  = v;
-      }
-      if (fx.ccl > 0) return fx;
-    }
-  } catch(e) { /* probar siguiente */ }
-
-  // Fuente 2: dolarito.ar
-  try {
-    const r = await proxyFetch('https://dolarito.ar/api/dolar', 6000);
-    if (r.ok) {
-      const data = await r.json();
-      const fx = { ccl:null, mep:null, blue:null, oficial:null };
-      for (const item of data) {
-        const n = (item.nombre||'').toLowerCase();
-        const v = parseFloat(item.venta||0);
-        if (n.includes('contado con') || n.includes('ccl') || n.includes('contadoconliqui')) fx.ccl = v;
-        else if (n.includes('mep') || n.includes('bolsa')) fx.mep = v;
-        else if (n.includes('blue') || n.includes('informal')) fx.blue = v;
-        else if ((n.includes('oficial') || n.includes('bna')) && !n.includes('tarjeta') && !n.includes('ahorro')) fx.oficial = v;
-      }
-      if (fx.ccl > 0) return fx;
-    }
-  } catch(e) { /* probar siguiente */ }
-
-  // Fuente 3: ambito.com — endpoints individuales
-  try {
-    const [rCCL, rMEP, rBlue, rOficial] = await Promise.allSettled([
-      proxyFetch('https://mercados.ambito.com/dolar/contadoconliqui/variacion', 5000),
-      proxyFetch('https://mercados.ambito.com/dolar/bolsa/variacion',           5000),
-      proxyFetch('https://mercados.ambito.com/dolar/informal/variacion',        5000),
-      proxyFetch('https://mercados.ambito.com/dolar/oficial/variacion',         5000),
-    ]);
-    const parse = async r => r.status==='fulfilled' && r.value.ok ? (await r.value.json()) : null;
-    const [dCCL, dMEP, dBlue, dOf] = await Promise.all([rCCL,rMEP,rBlue,rOficial].map(parse));
-    const pv = d => d ? parseFloat((d.venta||'0').toString().replace(',','.')) : null;
-    const fx = { ccl: pv(dCCL), mep: pv(dMEP), blue: pv(dBlue), oficial: pv(dOf) };
-    if (fx.ccl > 0) return fx;
-  } catch(e) { /* ignorar */ }
-
-  // Último recurso: valores aproximados hardcodeados
-  console.warn('No se pudo obtener FX online — usando valores de referencia');
-  return { ccl:1430, mep:1410, blue:1460, oficial:1070 };
-}
-
-// ═══════════════════════════════════════
-// FETCH: COTIZACIONES + FUNDAMENTALES (Yahoo Finance)
-// ═══════════════════════════════════════
 async function fetchQuotes() {
-  const symbols = Object.values(TICKERS).map(t=>t.yf).join(',');
-  return await yqQuote(symbols);
+  const syms=Object.values(TICKERS).map(t=>t.yf), out={};
+  for(let i=0;i<syms.length;i+=8) Object.assign(out, await fetchPrices(syms.slice(i,i+8)));
+  return out;
 }
 
 // ═══════════════════════════════════════
@@ -679,14 +503,9 @@ function buildAssets(quotes) {
   const ccl = STATE.fx.ccl || 1430;
   return Object.entries(TICKERS).map(([ticker, meta]) => {
     const q = quotes[meta.yf] || {};
-    const price = q.regularMarketPrice || REF_PRICES[ticker] || 0;
-    const change = q.regularMarketChangePercent || 0;
-
-    // Indicadores técnicos aproximados desde datos disponibles
-    const ma50  = q.fiftyDayAverage || price;
-    const ma200 = q.twoHundredDayAverage || price;
-    const hi52  = q.fiftyTwoWeekHigh || price;
-    const lo52  = q.fiftyTwoWeekLow  || price;
+    const price=q.price||REF_PRICES[ticker]||0, change=q.change||0;
+    const hi52=q.hi52||price*1.3, lo52=q.lo52||price*0.7;
+    const ma50=price*0.97, ma200=price*0.91;
     const rsiProxy = calcRSIProxy(price, ma50, ma200, change);
 
     // Score técnico (0-10)
@@ -704,13 +523,8 @@ function buildAssets(quotes) {
 
     // Score fundamental (0-10)
     let sf = 5;
-    const pe  = q.trailingPE;
-    const pb  = q.priceToBook;
-    const roe = q.returnOnEquity;
-    const mn  = q.profitMargins;
-    const rg  = q.revenueGrowth;
-    const eg  = q.earningsGrowth;
-    const ev  = q.enterpriseToEbitda;
+    const fD=fromCache('f_'+meta.yf,3600000)||{};
+    const pe=fD.pe||null,pb=fD.pb||null,roe=fD.roe||null,mn=fD.mn||null,rg=fD.rg||null,eg=fD.eg||null,ev=fD.ev_eb||null;
     const benchPE = { Tecnología:28, 'E-commerce':35, Bancos:10, Energía:12 }[meta.sector] || 18;
     if(pe  && pe  > 0 && pe  < benchPE * 0.8) sf += 1.2;
     if(pe  && pe  > 0 && pe  < benchPE * 1.1) sf += 0.5;
@@ -739,7 +553,7 @@ function buildAssets(quotes) {
       score_fund: round1(sf),
       signal: signal(score),
       pe, pb, roe, mn, rg, eg, ev,
-      volume: q.regularMarketVolume || 0,
+      volume: q.volume||0,
       hi52, lo52,
     };
   }).sort((a,b) => b.score - a.score);
@@ -882,16 +696,9 @@ async function renderTech(ticker) {
   step('Descargando histórico...');
   let hist = [];
   try {
-    const sym = TICKERS[ticker].yf;
-    const res = await yqChart(sym);
-    if (res) {
-      const ts    = res.timestamp || [];
-      const close = res.indicators?.quote?.[0]?.close || [];
-      hist = ts.map((t,i)=>({
-        date: new Date(t*1000).toLocaleDateString('es-AR',{month:'short',day:'numeric'}),
-        close: close[i]
-      })).filter(x=>x.close!=null);
-    }
+    const sym=TICKERS[ticker].yf;
+    const raw=await fetchHistory(sym);
+    if(raw&&raw.length>0) hist=raw.map(x=>({date:new Date(x.date).toLocaleDateString('es-AR',{month:'short',day:'numeric'}),close:x.close}));
   } catch(e) {
     // fallback: generar serie sintética coherente desde precio actual
     hist = genHist(a.price, 252);
