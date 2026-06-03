@@ -489,6 +489,75 @@ async function fetchQuotes() {
   return out;
 }
 
+// ═══════════════════════════════════
+// NAVEGACION
+// ═══════════════════════════════════
+function go(page, btn) {
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));
+  document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('on'));
+  $('page-'+page).classList.add('on');
+  btn.classList.add('on');
+  if(page==='tech') renderTech(activeTech);
+  if(page==='fund') renderFund(activeFund);
+  if(page==='ai' && chatHist.length===0) initChat();
+}
+
+// ═══════════════════════════════════
+// CARGA PRINCIPAL
+// ═══════════════════════════════════
+async function loadAll() {
+  const btn = $('rfBtn');
+  btn.disabled = true;
+  $('loader').classList.remove('off');
+  $('errBox').style.display = 'none';
+  step('Obteniendo tipos de cambio...');
+  try { STATE.fx = await fetchFX(); }
+  catch(e) { STATE.fx = {ccl:1430,mep:1410,blue:1460,oficial:1070}; }
+  step('Descargando cotizaciones...');
+  let quotes = {};
+  try { quotes = await fetchQuotes(); } catch(e) { console.warn(e.message); }
+  step('Calculando scores...');
+  STATE.assets = buildAssets(quotes);
+  step('Listo!');
+  await sleep(200);
+  $('loader').classList.add('off');
+  renderDash();
+  $('tsLabel').textContent = 'Ult: '+new Date().toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'});
+  btn.disabled = false;
+  setTimeout(bgFund, 1000);
+}
+function step(t) { $('lstep').textContent = t; }
+async function bgFund() {
+  for (const [,m] of Object.entries(TICKERS)) {
+    try { await fetchFundamentals(m.yf); await sleep(400); } catch(e) {}
+  }
+  const q = fromCache('p_'+Object.values(TICKERS).map(t=>t.yf).join(','),120000)||{};
+  STATE.assets = buildAssets(q);
+  renderDash();
+}
+async function fetchFX() {
+  try {
+    const r = await fetch('https://dolarapi.com/v1/dolares',{signal:AbortSignal.timeout(6000)});
+    if(r.ok){
+      const fx={ccl:null,mep:null,blue:null,oficial:null};
+      for(const x of await r.json()){
+        const k=(x.casa||'').toLowerCase(), v=parseFloat(x.venta||0);
+        if(k==='contadoconliqui') fx.ccl=v;
+        else if(k==='bolsa')      fx.mep=v;
+        else if(k==='blue')       fx.blue=v;
+        else if(k==='oficial')    fx.oficial=v;
+      }
+      if(fx.ccl>0) return fx;
+    }
+  } catch(e){}
+  try {
+    const r=await fetch('https://mercados.ambito.com/dolar/contadoconliqui/variacion',{signal:AbortSignal.timeout(5000)});
+    if(r.ok){const d=await r.json(); return {ccl:parseFloat(d.venta||0),mep:parseFloat(d.compra||0),blue:null,oficial:null};}
+  } catch(e){}
+  return {ccl:1430,mep:1410,blue:1460,oficial:1070};
+}
+
+
 // ═══════════════════════════════════════
 // CONSTRUIR ASSETS con scoring
 // ═══════════════════════════════════════
