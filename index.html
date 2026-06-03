@@ -498,6 +498,20 @@ const REF_PRICES = {
   AAPL:215, MSFT:430, GOOGL:170, NVDA:900,
   MELI:2200, AMZN:190, VIST:48, GLOB:215,
 };
+const REF_FUND = {
+  AAPL: {pe:33, pb:50, ev_eb:25, roe:1.47, mn:0.264, rg:0.051, eg:0.11},
+  MSFT: {pe:35, pb:12, ev_eb:27, roe:0.38, mn:0.358, rg:0.162, eg:0.18},
+  GOOGL:{pe:22, pb:7,  ev_eb:17, roe:0.32, mn:0.242, rg:0.128, eg:0.29},
+  NVDA: {pe:48, pb:42, ev_eb:38, roe:0.91, mn:0.568, rg:1.224, eg:1.68},
+  MELI: {pe:58, pb:22, ev_eb:42, roe:0.28, mn:0.108, rg:0.384, eg:0.42},
+  AMZN: {pe:42, pb:9,  ev_eb:18, roe:0.22, mn:0.084, rg:0.121, eg:0.95},
+  VIST: {pe:8,  pb:4,  ev_eb:6,  roe:0.43, mn:0.284, rg:0.684, eg:0.72},
+  GLOB: {pe:28, pb:8,  ev_eb:18, roe:0.22, mn:0.184, rg:0.228, eg:0.25},
+  GGAL: {pe:8,  pb:1.5,ev_eb:5,  roe:0.18, mn:0.24,  rg:0.221, eg:0.18},
+  BMA:  {pe:7,  pb:1.2,ev_eb:4.8,roe:0.16, mn:0.242, rg:0.184, eg:0.15},
+  YPF:  {pe:5,  pb:0.8,ev_eb:3.9,roe:0.13, mn:0.089, rg:0.142, eg:0.12},
+  PAMP: {pe:10, pb:2,  ev_eb:6,  roe:0.14, mn:0.124, rg:0.098, eg:0.09},
+};
 
 function buildAssets(quotes) {
   const ccl = STATE.fx.ccl || 1430;
@@ -523,8 +537,9 @@ function buildAssets(quotes) {
 
     // Score fundamental (0-10)
     let sf = 5;
-    const fD=fromCache('f_'+meta.yf,3600000)||{};
-    const pe=fD.pe||null,pb=fD.pb||null,roe=fD.roe||null,mn=fD.mn||null,rg=fD.rg||null,eg=fD.eg||null,ev=fD.ev_eb||null;
+    const fD=fromCache('f_'+meta.yf,3600000)||{}, rf=REF_FUND[ticker]||{};
+    const pe=fD.pe||rf.pe||null, pb=fD.pb||rf.pb||null, roe=fD.roe||rf.roe||null;
+    const mn=fD.mn||rf.mn||null, rg=fD.rg||rf.rg||null, eg=fD.eg||rf.eg||null, ev=fD.ev_eb||rf.ev_eb||null;
     const benchPE = { Tecnología:28, 'E-commerce':35, Bancos:10, Energía:12 }[meta.sector] || 18;
     if(pe  && pe  > 0 && pe  < benchPE * 0.8) sf += 1.2;
     if(pe  && pe  > 0 && pe  < benchPE * 1.1) sf += 0.5;
@@ -691,6 +706,13 @@ async function renderTech(ticker) {
 
   const a = STATE.assets.find(x=>x.ticker===ticker);
   if(!a) return;
+  const rf=REF_FUND[ticker]||{};
+  if(!a.pe)  a.pe  = rf.pe;
+  if(!a.pb)  a.pb  = rf.pb;
+  if(!a.roe) a.roe = rf.roe;
+  if(!a.mn)  a.mn  = rf.mn;
+  if(!a.rg)  a.rg  = rf.rg;
+  if(!a.ev)  a.ev  = rf.ev_eb;
 
   // Histórico de precios desde Yahoo Finance
   step('Descargando histórico...');
@@ -816,9 +838,19 @@ function renderFund(ticker) {
   const a = STATE.assets.find(x=>x.ticker===ticker);
   if(!a) return;
 
-  const bench = { Tecnología:28,'E-commerce':35,Bancos:10,Energía:12 }[a.sector]||18;
+  // Usar REF_FUND como base, sobreescribir con datos live si existen
+  const rf  = REF_FUND[ticker] || {};
+  const fD  = fromCache('f_'+TICKERS[ticker]?.yf, 3600000) || {};
+  const pe  = fD.pe   || rf.pe   || null;
+  const pb  = fD.pb   || rf.pb   || null;
+  const ev  = fD.ev_eb|| rf.ev_eb|| null;
+  const roe = fD.roe  || rf.roe  || null;
+  const mn  = fD.mn   || rf.mn   || null;
+  const rg  = fD.rg   || rf.rg   || null;
+  const eg  = fD.eg   || rf.eg   || null;
+  const bench = {'Tecnologia':28,'E-commerce':35,'Bancos':10,'Energia':12}[a.sector]||18;
 
-  // Valuación
+  // Gráfico valuación
   const vCtx = $('valChart').getContext('2d');
   if(CHARTS.val) CHARTS.val.destroy();
   CHARTS.val = new Chart(vCtx,{
@@ -826,14 +858,14 @@ function renderFund(ticker) {
     data:{
       labels:['P/E','EV/EBITDA','P/Book'],
       datasets:[
-        {label:ticker,    data:[a.pe||0, a.ev||0, a.pb||0],      backgroundColor:'rgba(0,200,240,.7)', borderRadius:4},
-        {label:'Benchmark',data:[bench, bench*.55, 2.5],          backgroundColor:'rgba(107,138,170,.3)',borderRadius:4},
+        {label:ticker,     data:[pe||0, ev||0, pb||0], backgroundColor:'rgba(0,200,240,.7)', borderRadius:4},
+        {label:'Benchmark',data:[bench, bench*.55, 2.5],backgroundColor:'rgba(107,138,170,.3)',borderRadius:4},
       ]
     },
     options:co({legend:true})
   });
 
-  // Rentabilidad
+  // Gráfico rentabilidad
   const pCtx = $('profChart').getContext('2d');
   if(CHARTS.prof) CHARTS.prof.destroy();
   CHARTS.prof = new Chart(pCtx,{
@@ -843,10 +875,10 @@ function renderFund(ticker) {
       datasets:[{
         label:ticker,
         data:[
-          a.roe  ? +(a.roe  *100).toFixed(1) : null,
-          a.mn   ? +(a.mn   *100).toFixed(1) : null,
-          a.rg   ? +(a.rg   *100).toFixed(1) : null,
-          a.eg   ? +(a.eg   *100).toFixed(1) : null,
+          roe ? +(roe*100).toFixed(1) : null,
+          mn  ? +(mn *100).toFixed(1) : null,
+          rg  ? +(rg *100).toFixed(1) : null,
+          eg  ? +(eg *100).toFixed(1) : null,
         ],
         backgroundColor:['#00c8f0bb','#8b6bffbb','#00e08abb','#f0a500bb'],
         borderRadius:4,
@@ -855,41 +887,47 @@ function renderFund(ticker) {
     options:co({legend:false})
   });
 
-  // Análisis texto
+  // Texto de análisis
   const parts = [];
-  if(a.pe&&a.pe>0&&a.pe<bench*.85) parts.push(`P/E de <b>${fmt(a.pe,1)}x</b> — valuación atractiva bajo el benchmark sectorial de ${bench}x.`);
-  else if(a.pe&&a.pe>0) parts.push(`P/E de <b>${fmt(a.pe,1)}x</b>.`);
-  if(a.roe&&a.roe>0.20) parts.push(`ROE excepcional de <b>${pct(a.roe)}</b> — alta generación de valor para el accionista.`);
-  else if(a.roe&&a.roe>0) parts.push(`ROE de <b>${pct(a.roe)}</b>.`);
-  if(a.mn&&a.mn>0.20) parts.push(`Margen neto de <b>${pct(a.mn)}</b> — empresa muy eficiente.`);
-  else if(a.mn) parts.push(`Margen neto: <b>${pct(a.mn)}</b>.`);
-  if(a.rg&&a.rg>0.20) parts.push(`Crecimiento de revenue de <b>+${pct(a.rg)}</b> YoY — muy por encima del promedio.`);
-  else if(a.rg) parts.push(`Revenue YoY: <b>${a.rg>0?'+':''}${pct(a.rg)}</b>.`);
-  if(a.type==='cedear') parts.push(`CCL actual <b>$${(STATE.fx.ccl||0).toLocaleString('es-AR',{maximumFractionDigits:0})}</b>. Precio equivalente en ARS: ~<b>$${Math.round(a.price_ars).toLocaleString('es-AR')}</b>.`);
+  if(pe&&pe>0&&pe<bench*.85) parts.push('P/E de <b>'+fmt(pe,1)+'x</b> — valuacion atractiva vs benchmark '+bench+'x.');
+  else if(pe&&pe>0) parts.push('P/E de <b>'+fmt(pe,1)+'x</b>.');
+  if(roe&&roe>0.20) parts.push('ROE de <b>'+pct(roe)+'</b> — excelente generacion de valor para el accionista.');
+  else if(roe&&roe>0) parts.push('ROE de <b>'+pct(roe)+'</b>.');
+  if(mn&&mn>0.20) parts.push('Margen neto de <b>'+pct(mn)+'</b> — empresa muy eficiente.');
+  else if(mn&&mn>0) parts.push('Margen neto: <b>'+pct(mn)+'</b>.');
+  if(rg&&rg>0.20) parts.push('Crecimiento de revenue <b>+'+pct(rg)+'</b> YoY — por encima del promedio.');
+  else if(rg&&rg>0) parts.push('Revenue YoY: <b>+'+pct(rg)+'</b>.');
+  if(a.type==='cedear') parts.push('CCL actual <b>$'+(STATE.fx.ccl||0).toLocaleString('es-AR',{maximumFractionDigits:0})+'</b>. ARS: ~<b>$'+Math.round(a.price_ars).toLocaleString('es-AR')+'</b>.');
 
+  const src = Object.keys(fD).length > 0 ? 'Twelve Data (live)' : 'Referencia (ultimo reporte)';
   const sig = signal(a.score);
   const sigCls2 = a.score>=6.2?'c-green':a.score<=3.2?'c-red':'c-amber';
-  $('fundDetail').innerHTML = `
-    <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:14px;flex-wrap:wrap">
-      <span style="font-family:var(--mono);font-size:26px;font-weight:600;color:${a.type==='cedear'?'var(--purple)':'var(--cyan)'}">${a.ticker}</span>
-      <span class="${sigCls2}" style="font-family:var(--mono);font-size:13px;font-weight:600">${sig}</span>
-      <span style="color:var(--dim);font-size:11px;font-family:var(--mono)">${a.sector}</span>
-      <span style="margin-left:auto;font-family:var(--mono);font-size:20px;color:${scoreColor(a.score)}">${a.score_fund}<span style="font-size:12px;color:var(--dim)">/10 fund.</span></span>
-    </div>
-    <div style="font-size:13px;line-height:1.8;color:var(--muted);margin-bottom:14px">${parts.join(' ') || 'Datos cargados en tiempo real desde Yahoo Finance.'}</div>
-    <div style="display:flex;flex-wrap:wrap;gap:10px">
-      ${[
-        ['P/E',     fmt(a.pe,1)+'x'],
-        ['EV/EBITDA',fmt(a.ev,1)+'x'],
-        ['P/Book',  fmt(a.pb,2)+'x'],
-        ['ROE',     pct(a.roe)],
-        ['Mg. neto',pct(a.mn)],
-        ['Rev. YoY',a.rg!=null?(a.rg>0?'+':'')+pct(a.rg):'—'],
-      ].map(([l,v])=>`<div style="background:var(--ink3);border:1px solid var(--line);border-radius:5px;padding:8px 12px;min-width:90px">
-        <div style="font-size:10px;color:var(--dim);font-family:var(--mono)">${l}</div>
-        <div style="font-family:var(--mono);font-size:14px;font-weight:600;margin-top:3px">${v}</div>
-      </div>`).join('')}
-    </div>`;
+
+  const cards = [
+    ['P/E',      pe  ? fmt(pe,1)+'x'  : '—'],
+    ['EV/EBITDA',ev  ? fmt(ev,1)+'x'  : '—'],
+    ['P/Book',   pb  ? fmt(pb,2)+'x'  : '—'],
+    ['ROE',      roe ? pct(roe)        : '—'],
+    ['Mg. neto', mn  ? pct(mn)         : '—'],
+    ['Rev. YoY', rg  ? (rg>0?'+':'')+pct(rg) : '—'],
+  ];
+
+  $('fundDetail').innerHTML =
+    '<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:14px;flex-wrap:wrap">'+
+      '<span style="font-family:var(--mono);font-size:26px;font-weight:600;color:'+(a.type==='cedear'?'var(--purple)':'var(--cyan)')+'">'+a.ticker+'</span>'+
+      '<span class="'+sigCls2+'" style="font-family:var(--mono);font-size:13px;font-weight:600">'+sig+'</span>'+
+      '<span style="color:var(--dim);font-size:11px;font-family:var(--mono)">'+a.sector+'</span>'+
+      '<span style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--dim)">Fuente: '+src+'</span>'+
+    '</div>'+
+    '<div style="font-size:13px;line-height:1.8;color:var(--muted);margin-bottom:14px">'+(parts.join(' ')||'Sin datos de analisis disponibles.')+'</div>'+
+    '<div style="display:flex;flex-wrap:wrap;gap:10px">'+
+      cards.map(function(x){
+        return '<div style="background:var(--ink3);border:1px solid var(--line);border-radius:5px;padding:8px 12px;min-width:90px">'+
+          '<div style="font-size:10px;color:var(--dim);font-family:var(--mono)">'+x[0]+'</div>'+
+          '<div style="font-family:var(--mono);font-size:14px;font-weight:600;margin-top:3px">'+x[1]+'</div>'+
+        '</div>';
+      }).join('')+
+    '</div>';
 }
 
 // ═══════════════════════════════════════
