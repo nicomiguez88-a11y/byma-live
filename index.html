@@ -421,7 +421,7 @@ const TICKERS = {
 // ── API helper: envuelve cualquier URL en allorigins.win para evitar CORS
 // allorigins funciona desde GitHub Pages y no requiere autenticación
 // ── CAPA DE DATOS (CORS nativo) ────────────────────────────────
-const TD_KEY = 'demo';
+const TD_KEY = '78e4f61e68a64aaea21ca940682d884f';
 async function tdFetch(ep, params={}) {
   const qs = new URLSearchParams({...params, apikey:TD_KEY}).toString();
   const r  = await fetch('https://api.twelvedata.com/'+ep+'?'+qs, {signal:AbortSignal.timeout(10000)});
