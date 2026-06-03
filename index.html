@@ -395,6 +395,16 @@ header {
 </div>
 
 <script>
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
+
+let STATE = { fx:{}, assets:[], loaded:false };
+let CHARTS = {};
+let activeTech = 'NVDA';
+let activeFund = 'MSFT';
+let chatHist   = [];
+
+
 // ═══════════════════════════════════════
 // DATOS: se cargan en tiempo real de APIs públicas
 // Fuente 1: dolarito.ar  → CCL, MEP, Blue
